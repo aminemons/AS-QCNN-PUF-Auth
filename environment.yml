@@ -1,0 +1,25 @@
+name: as-qcnn-puf
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy>=1.26
+  - scipy>=1.12
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - tqdm>=4.66
+  - pyyaml>=6.0
+  - pandas>=2.2
+  - scikit-learn>=1.4
+  - tensorboard>=2.16
+  - pip:
+    - torch==2.3.0
+    - torchvision==0.18.0
+    - --extra-index-url https://download.pytorch.org/whl/cu121
+    - pypuf>=2.2.0
+    - pennylane>=0.38.0
+    - pennylane-lightning>=0.38.0

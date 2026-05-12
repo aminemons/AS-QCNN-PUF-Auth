@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.env
+.venv
+env/
+venv/
+*.log
+
+# Data (large, generated locally)
+data/
+data/**
+
+# Checkpoints (large)
+results/checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep results subdirs but not large files
+!results/
+!results/matrices/
+!results/plots/
+!results/metrics/
+results/checkpoints/**
+*.pt
+*.pth
+*.onnx
+*.bin
