@@ -1,0 +1,6 @@
+results/checkpoints/**/*.pt
+results/checkpoints/**/*.pth
+results/tensorboard/
+data/
+*.npz
+*.npy
