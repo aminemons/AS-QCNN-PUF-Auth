@@ -124,8 +124,8 @@ if [ -n "\${SUMMARY}" ]; then
 fi
 
 git commit -m "\${MSG}" || echo "Nothing new to commit."
-git push origin main && echo "[OK] Results pushed to origin/main." \
-                     || echo "[WARN] git push failed — check remote/auth."
+git push origin master && echo "[OK] Results pushed to origin/master." \
+                       || echo "[WARN] git push failed — check remote/auth."
 
 echo "====================================================="
 echo " ALL DONE. You can now pull on your local machine:"
