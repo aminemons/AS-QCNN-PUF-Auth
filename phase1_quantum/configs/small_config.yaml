@@ -10,7 +10,7 @@ batch_size:  512
 num_workers: 2
 
 # Training
-epochs_warmup: 2
+epochs_warmup: 0
 epochs_joint:  5
 lr_warmup:     1.0e-3
 lr_joint:      1.0e-4

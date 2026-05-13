@@ -30,7 +30,7 @@ class TorchVQC(nn.Module):
         init_scale: weight initialization scale
     """
 
-    def __init__(self, n_qubits: int = 8, n_layers: int = 6, init_scale: float = 0.01):
+    def __init__(self, n_qubits: int = 8, n_layers: int = 6, init_scale: float = 1e-4):
         super().__init__()
         self.n_qubits = n_qubits
         self.n_states = 2 ** n_qubits
@@ -61,9 +61,17 @@ class TorchVQC(nn.Module):
             self.register_buffer(f"cnot_{ctrl}_{tgt}_src", indices[ctrl_is_1])
             self.register_buffer(f"cnot_{ctrl}_{tgt}_dst", flipped[ctrl_is_1])
 
+    # Gate matrices (batched & shared)
     # ------------------------------------------------------------------
-    # Gate matrices (batched)
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _h() -> torch.Tensor:
+        """Shared Hadamard matrix. -> [2, 2] complex64"""
+        inv_sqrt2 = 1.0 / math.sqrt(2)
+        return torch.tensor([
+            [inv_sqrt2,  inv_sqrt2],
+            [inv_sqrt2, -inv_sqrt2]
+        ], dtype=torch.complex64)
+
     @staticmethod
     def _ry(angles: torch.Tensor) -> torch.Tensor:
         """Batch Ry matrix. angles: [B] → [B, 2, 2] complex64"""
@@ -151,10 +159,26 @@ class TorchVQC(nn.Module):
         state = torch.zeros(B, self.n_states, dtype=dtype, device=device)
         state[:, 0] = 1.0 + 0j
 
-        # AngleEmbedding: Ry(x_i) on qubit i
+        # ZZ Feature Map
+        # 1. Hadamard on all qubits
+        h_gate = self._h().to(device)
         for i in range(self.n_qubits):
-            gate = self._ry(x[:, i])      # [B, 2, 2]
+            state = self._apply_single(state, h_gate, i)
+
+        # 2. Rz(x_i)
+        for i in range(self.n_qubits):
+            gate = self._rz(x[:, i])      # [B, 2, 2]
             state = self._apply_single(state, gate, i)
+
+        # 3. Rzz(x_i * x_j) cross-entangling
+        for i in range(self.n_qubits):
+            j = (i + 1) % self.n_qubits
+            theta = x[:, i] * x[:, j]
+            # CNOT(i, j) -> Rz_j(theta) -> CNOT(i, j)
+            state = self._apply_cnot(state, i, j)
+            gate = self._rz(theta)
+            state = self._apply_single(state, gate, j)
+            state = self._apply_cnot(state, i, j)
 
         # StronglyEntanglingLayers
         for layer in range(self.n_layers):

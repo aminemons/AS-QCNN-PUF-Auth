@@ -10,8 +10,8 @@ batch_size:  4096
 num_workers: 8
 
 # Training phases
-epochs_warmup: 10
-epochs_joint:  70
+epochs_warmup: 0
+epochs_joint:  80
 lr_warmup:     1.0e-3
 lr_joint:      5.0e-5
 lr_vqc:        1.0e-3

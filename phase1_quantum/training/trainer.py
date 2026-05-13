@@ -15,7 +15,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -66,7 +65,7 @@ class Trainer:
 
         self.writer = SummaryWriter(log_dir=str(self.tb_dir))
         self.criterion = PUFLoss(lambda_ent=cfg.get("lambda_ent", 0.01))
-        self.scaler = GradScaler(enabled=False)  # quantum sim stays float32
+        self.scaler = torch.amp.GradScaler('cuda', enabled=False)  # quantum sim stays float32
 
         self.history = {
             "train_loss": [], "train_acc": [],
@@ -185,13 +184,15 @@ class Trainer:
         es   = EarlyStopping(patience=cfg.get("early_stop_patience", 12), mode="min")
 
         # Phase 1
-        gs = self.train_phase(
-            phase=1,
-            n_epochs=cfg["epochs_warmup"],
-            train_loader=train_loader,
-            val_loader=val_loader,
-            checkpoint=ckpt,
-        )
+        gs = 0
+        if cfg.get("epochs_warmup", 0) > 0:
+            gs = self.train_phase(
+                phase=1,
+                n_epochs=cfg["epochs_warmup"],
+                train_loader=train_loader,
+                val_loader=val_loader,
+                checkpoint=ckpt,
+            )
 
         # Phase 2
         self.train_phase(

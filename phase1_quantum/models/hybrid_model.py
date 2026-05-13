@@ -14,9 +14,9 @@ from .quantum_circuit import TorchVQC
 
 
 class ClassicalEncoder(nn.Module):
-    """Maps 64-bit PUF challenge to 8 qubit rotation angles."""
+    """Maps a PUF challenge patch to qubit rotation angles."""
 
-    def __init__(self, in_features: int = 64, hidden: int = 128, out_features: int = 8):
+    def __init__(self, in_features: int = 16, hidden: int = 128, out_features: int = 8):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_features, hidden),
@@ -43,7 +43,7 @@ class ClassicalEncoder(nn.Module):
 
 
 class ClassicalHead(nn.Module):
-    """Maps 8 PauliZ expectation values to a binary prediction."""
+    """Maps concatenated PauliZ expectation values to a binary prediction."""
 
     def __init__(self, in_features: int = 8):
         super().__init__()
@@ -66,14 +66,17 @@ class HybridQCNN(nn.Module):
       Phase 2 (joint):   unfreeze all, end-to-end backprop through VQC
     """
 
-    def __init__(self, n_bits: int = 64, n_qubits: int = 8, n_layers: int = 6):
+    def __init__(self, n_bits: int = 64, n_qubits: int = 8, n_layers: int = 6, n_patches: int = 4):
         super().__init__()
+        self.n_bits = n_bits
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+        self.n_patches = n_patches
+        self.patch_size = n_bits // n_patches
 
-        self.encoder = ClassicalEncoder(in_features=n_bits, out_features=n_qubits)
-        self.vqc = TorchVQC(n_qubits=n_qubits, n_layers=n_layers)
-        self.head = ClassicalHead(in_features=n_qubits)
+        self.encoder = ClassicalEncoder(in_features=self.patch_size, out_features=n_qubits)
+        self.vqc = TorchVQC(n_qubits=n_qubits, n_layers=n_layers, init_scale=1e-4)
+        self.head = ClassicalHead(in_features=n_qubits * n_patches)
 
     def freeze_vqc(self):
         for p in self.vqc.parameters():
@@ -85,9 +88,21 @@ class HybridQCNN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: [B, n_bits] → logits [B]"""
-        angles = self.encoder(x)
-        expectations = self.vqc(angles)
-        logits = self.head(expectations)
+        B = x.shape[0]
+        
+        # Split into patches: [B, n_patches, patch_size]
+        patches = x.view(B, self.n_patches, self.patch_size)
+        
+        # Fold patch dimension into batch for parallel processing
+        patches_flat = patches.view(B * self.n_patches, self.patch_size)
+        
+        angles = self.encoder(patches_flat)       # [B * n_patches, n_qubits]
+        expectations = self.vqc(angles)           # [B * n_patches, n_qubits]
+        
+        # Unfold patch dimension
+        expectations = expectations.view(B, self.n_patches * self.n_qubits)
+        
+        logits = self.head(expectations)          # [B]
         return logits
 
     def predict(self, x: torch.Tensor, threshold: float = 0.0) -> torch.Tensor:
