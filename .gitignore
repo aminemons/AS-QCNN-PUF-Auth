@@ -11,14 +11,15 @@ build/
 .venv
 env/
 venv/
-*.log
+# *.log — allow training logs in results/logs/
 
 # Data (large, generated locally)
-data/
+# data/ at root only
 data/**
 
-# Checkpoints (large)
-results/checkpoints/
+# Checkpoints — allow only final_model.pt, block everything else
+results/checkpoints/**
+!results/checkpoints/**/final_model.pt
 
 # IDE
 .vscode/
@@ -34,13 +35,16 @@ results/checkpoints/
 .DS_Store
 Thumbs.db
 
-# Keep results subdirs but not large files
+# Keep results subdirs
 !results/
 !results/matrices/
 !results/plots/
 !results/metrics/
-results/checkpoints/**
-*.pt
+!results/logs/
+!results/logs/*.log
+# Block large binary model files everywhere EXCEPT the explicit final_model.pt above
 *.pth
 *.onnx
 *.bin
+
+/data/
