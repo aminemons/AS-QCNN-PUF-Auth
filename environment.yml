@@ -17,8 +17,8 @@ dependencies:
   - scikit-learn>=1.4
   - tensorboard>=2.16
   - pip:
-    - torch==2.5.1+cu121
-    - --index-url https://download.pytorch.org/whl/cu121
+    - tensorflow>=2.15.0
+    - pygad>=3.3.1
     - pypuf>=2.2.0
     - pennylane>=0.38.0
     - pennylane-lightning>=0.38.0

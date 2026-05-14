@@ -1,210 +1,137 @@
 """
-Core training loop for the Hybrid QCNN PUF model.
-
-Supports two-phase training:
-  Phase 1 (warm-up):  VQC frozen, encoder + head trained with higher LR
-  Phase 2 (joint):    full end-to-end backprop through quantum circuit
-
-Logging: TensorBoard + console
+TensorFlow & PyGAD Trainer for Quantum CNN.
+Uses a Genetic Algorithm to evolve the HybridQCNN weights instead of standard Backpropagation.
 """
 
-import time
+import pygad
+import pygad.kerasga
+import tensorflow as tf
+import numpy as np
 import logging
 from pathlib import Path
-from typing import Optional
-
-import torch
-import torch.nn as nn
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-
-from .losses import PUFLoss
-from .callbacks import EarlyStopping, BestModelCheckpoint
+import time
 
 logger = logging.getLogger(__name__)
 
-
-def _accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
-    preds = (logits > 0).long()
-    return (preds == targets.long()).float().mean().item()
-
-
-class Trainer:
-    """
-    Two-phase trainer for HybridQCNN.
-
-    Args:
-        model:        HybridQCNN instance
-        device:       torch.device (cuda recommended)
-        cfg:          config dict from yaml
-        run_tag:      string identifier for this run (e.g. "3xor")
-        output_dir:   base output directory
-    """
-
-    def __init__(
-        self,
-        model: nn.Module,
-        device: torch.device,
-        cfg: dict,
-        run_tag: str = "run",
-        output_dir: str = "results",
-    ):
-        self.model = model.to(device)
-        self.device = device
+class GATrainer:
+    def __init__(self, model, cfg, run_tag, output_dir):
+        self.model = model
         self.cfg = cfg
         self.run_tag = run_tag
         self.output_dir = Path(output_dir)
+        self.history = {"val_acc": [], "best_fitness": []}
+        
+        # Use a small subset of data to rapidly compute fitness per generation.
+        # Computing on 800k samples * 15 population takes way too long per generation.
+        self.fitness_batch_size = cfg.get("ga_fitness_batch", 5000)
+        self.best_model_path = self.output_dir / "checkpoints" / self.run_tag / "final_model_weights.weights.h5"
+        self.best_model_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        self.keras_ga = None
+        self.train_x = None
+        self.train_y = None
+        self.val_x = None
+        self.val_y = None
+        self.best_val_acc = 0.0
 
-        self.ckpt_dir = self.output_dir / "checkpoints" / run_tag
-        self.tb_dir = self.output_dir / "tensorboard" / run_tag
-        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
-        self.tb_dir.mkdir(parents=True, exist_ok=True)
-
-        self.writer = SummaryWriter(log_dir=str(self.tb_dir))
-        self.criterion = PUFLoss(lambda_ent=cfg.get("lambda_ent", 0.01))
-        self.scaler = torch.amp.GradScaler('cuda', enabled=False)  # quantum sim stays float32
-
-        self.history = {
-            "train_loss": [], "train_acc": [],
-            "val_loss": [],   "val_acc": [],
-        }
-
-    # ------------------------------------------------------------------
-    def _make_optimizer(self, phase: int) -> torch.optim.Optimizer:
-        if phase == 1:
-            # Only encoder + head parameters
-            params = [
-                {"params": self.model.encoder.parameters(), "lr": self.cfg["lr_warmup"]},
-                {"params": self.model.head.parameters(),    "lr": self.cfg["lr_warmup"]},
-            ]
-        else:
-            params = [
-                {"params": self.model.encoder.parameters(), "lr": self.cfg["lr_joint"]},
-                {"params": self.model.vqc.parameters(),     "lr": self.cfg["lr_vqc"]},
-                {"params": self.model.head.parameters(),    "lr": self.cfg["lr_joint"]},
-            ]
-        return AdamW(params, weight_decay=self.cfg.get("weight_decay", 1e-4))
-
-    # ------------------------------------------------------------------
-    def _run_epoch(self, loader: DataLoader, optimizer, train: bool):
-        self.model.train(train)
-        total_loss = total_acc = 0.0
-        n_batches = len(loader)
-
-        ctx = torch.enable_grad() if train else torch.no_grad()
-        with ctx:
-            bar = tqdm(loader, desc="train" if train else "val", leave=False, ncols=90)
-            for challenges, responses in bar:
-                challenges = challenges.to(self.device, non_blocking=True)
-                responses = responses.to(self.device, non_blocking=True)
-
-                logits = self.model(challenges)
-                loss_tuple = self.criterion(logits, responses)
-                loss = loss_tuple[0]
-
-                if train:
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    optimizer.step()
-
-                acc = _accuracy(logits.detach(), responses)
-                total_loss += loss.item()
-                total_acc += acc
-                bar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.4f}")
-
-        return total_loss / n_batches, total_acc / n_batches
-
-    # ------------------------------------------------------------------
-    def train_phase(
-        self,
-        phase: int,
-        n_epochs: int,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        checkpoint: Optional[BestModelCheckpoint] = None,
-        early_stop: Optional[EarlyStopping] = None,
-        global_step_offset: int = 0,
-    ) -> int:
-        """Run one training phase. Returns number of epochs completed."""
-        if phase == 1:
-            logger.info(f"=== Phase 1: Warm-up ({n_epochs} epochs, VQC frozen) ===")
-            self.model.freeze_vqc()
-        else:
-            logger.info(f"=== Phase 2: Joint training ({n_epochs} epochs, all unfrozen) ===")
-            self.model.unfreeze_vqc()
-
-        optimizer = self._make_optimizer(phase)
-        scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
-
-        global_step = global_step_offset
-        for epoch in range(1, n_epochs + 1):
-            t0 = time.time()
-            train_loss, train_acc = self._run_epoch(train_loader, optimizer, train=True)
-            val_loss,   val_acc   = self._run_epoch(val_loader, None, train=False)
-            scheduler.step()
-            elapsed = time.time() - t0
-
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-            self.history["val_loss"].append(val_loss)
-            self.history["val_acc"].append(val_acc)
-
-            self.writer.add_scalars("loss", {"train": train_loss, "val": val_loss}, global_step)
-            self.writer.add_scalars("acc",  {"train": train_acc,  "val": val_acc},  global_step)
-            self.writer.add_scalar("lr", optimizer.param_groups[0]["lr"], global_step)
-            global_step += 1
-
-            logger.info(
-                f"[Phase {phase}] Ep {epoch:3d}/{n_epochs} | "
-                f"loss {train_loss:.4f}/{val_loss:.4f} | "
-                f"acc {train_acc:.4f}/{val_acc:.4f} | {elapsed:.1f}s"
-            )
-
-            if checkpoint:
-                checkpoint.step(self.model, val_acc, epoch, tag=f"ph{phase}_{self.run_tag}")
-            if early_stop and early_stop.step(val_loss):
-                logger.info("Early stopping triggered.")
+    def fit(self, train_ds, val_ds):
+        """
+        train_ds and val_ds are tf.data.Dataset objects.
+        """
+        logger.info(f"Extracting fitness subset ({self.fitness_batch_size} samples)...")
+        tx_list, ty_list = [], []
+        samples = 0
+        for x, y in train_ds:
+            tx_list.append(x)
+            ty_list.append(y)
+            samples += x.shape[0]
+            if samples >= self.fitness_batch_size:
                 break
+                
+        self.train_x = tf.concat(tx_list, axis=0)[:self.fitness_batch_size]
+        self.train_y = tf.concat(ty_list, axis=0)[:self.fitness_batch_size]
+        
+        logger.info("Extracting validation subset...")
+        vx_list, vy_list = [], []
+        # limit validation subset to 10k to keep it fast
+        val_samples = 0
+        for x, y in val_ds:
+            vx_list.append(x)
+            vy_list.append(y)
+            val_samples += x.shape[0]
+            if val_samples > 10000:
+                break
+                
+        self.val_x = tf.concat(vx_list, axis=0)
+        self.val_y = tf.concat(vy_list, axis=0)
 
-        return global_step
+        # 1. Initialize PyGAD model weights
+        # We must call the model once to build its weights
+        _ = self.model(self.train_x[:1])
+        num_solutions = self.cfg.get("ga_population_size", 15)
+        self.keras_ga = pygad.kerasga.KerasGA(model=self.model, num_solutions=num_solutions)
 
-    # ------------------------------------------------------------------
-    def fit(
-        self,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-    ):
-        """Full two-phase training."""
-        cfg = self.cfg
-        ckpt = BestModelCheckpoint(str(self.ckpt_dir), metric_name="val_acc", mode="max")
-        es   = EarlyStopping(patience=cfg.get("early_stop_patience", 12), mode="min")
-
-        # Phase 1
-        gs = 0
-        if cfg.get("epochs_warmup", 0) > 0:
-            gs = self.train_phase(
-                phase=1,
-                n_epochs=cfg["epochs_warmup"],
-                train_loader=train_loader,
-                val_loader=val_loader,
-                checkpoint=ckpt,
+        # 2. Fitness Function
+        def fitness_func(ga_instance, solution, sol_idx):
+            model_weights_matrix = pygad.kerasga.model_weights_as_matrix(
+                model=self.model, weights_vector=solution
             )
+            self.model.set_weights(weights=model_weights_matrix)
+            
+            logits = self.model(self.train_x, training=False)
+            preds = tf.cast(logits > 0, tf.float32)
+            
+            correct = tf.reduce_sum(tf.cast(tf.equal(preds, tf.expand_dims(tf.cast(self.train_y, tf.float32), 1)), tf.float32))
+            accuracy = float(correct / self.train_x.shape[0])
+            return accuracy
 
-        # Phase 2
-        self.train_phase(
-            phase=2,
-            n_epochs=cfg["epochs_joint"],
-            train_loader=train_loader,
-            val_loader=val_loader,
-            checkpoint=ckpt,
-            early_stop=es,
-            global_step_offset=gs,
+        # 3. Generation Callback
+        def on_generation(ga_instance):
+            solution, solution_fitness, _ = ga_instance.best_solution()
+            model_weights_matrix = pygad.kerasga.model_weights_as_matrix(
+                model=self.model, weights_vector=solution
+            )
+            self.model.set_weights(weights=model_weights_matrix)
+            
+            val_preds = []
+            batch_sz = 1024
+            for i in range(0, self.val_x.shape[0], batch_sz):
+                logits = self.model(self.val_x[i:i+batch_sz], training=False)
+                val_preds.append(tf.cast(logits > 0, tf.float32))
+                
+            val_preds = tf.concat(val_preds, axis=0)
+            correct = tf.reduce_sum(tf.cast(tf.equal(val_preds, tf.expand_dims(tf.cast(self.val_y, tf.float32), 1)), tf.float32))
+            val_acc = float(correct / self.val_x.shape[0])
+            
+            self.history["val_acc"].append(val_acc)
+            self.history["best_fitness"].append(solution_fitness)
+            
+            logger.info(f"[Generation {ga_instance.generations_completed}] Fitness (Train Acc): {solution_fitness:.4f} | Val Acc: {val_acc:.4f}")
+            
+            if val_acc > self.best_val_acc:
+                self.best_val_acc = val_acc
+                self.model.save_weights(self.best_model_path)
+                logger.info(f"   => New best model saved! (Val Acc: {val_acc:.4f})")
+
+        num_generations = self.cfg.get("ga_generations", 20)
+        
+        ga_instance = pygad.GA(
+            num_generations=num_generations,
+            num_parents_mating=max(2, num_solutions // 3),
+            initial_population=self.keras_ga.population_weights,
+            fitness_func=fitness_func,
+            parent_selection_type="sss",
+            crossover_type="single_point",
+            mutation_type="random",
+            mutation_percent_genes=10,
+            on_generation=on_generation,
+            suppress_warnings=True
         )
 
-        self.writer.close()
-        logger.info(f"Training complete. Best checkpoint: {ckpt.best_path}")
-        return ckpt.best_path, self.history
+        logger.info(f"Starting Genetic Algorithm Training for {num_generations} generations (Population: {num_solutions})...")
+        ga_instance.run()
+        
+        if self.best_model_path.exists():
+            self.model.load_weights(self.best_model_path)
+            
+        return self.best_model_path, self.history
