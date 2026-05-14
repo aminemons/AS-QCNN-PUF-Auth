@@ -38,8 +38,8 @@ class QuantumKerasLayer(tf.keras.layers.Layer):
             ctrl_is_1 = (indices >> (n - 1 - ctrl)) & 1 == 1
             flip_mask = 1 << (n - 1 - tgt)
             flipped = indices ^ flip_mask
-            self.cnot_masks[f"{ctrl}_{tgt}_src"] = tf.constant(indices[ctrl_is_1], dtype=tf.int32)
-            self.cnot_masks[f"{ctrl}_{tgt}_dst"] = tf.constant(flipped[ctrl_is_1], dtype=tf.int32)
+            self.cnot_masks[f"{ctrl}_{tgt}_src"] = indices[ctrl_is_1].astype(np.int32)
+            self.cnot_masks[f"{ctrl}_{tgt}_dst"] = flipped[ctrl_is_1].astype(np.int32)
 
     def _h(self):
         inv_sqrt2 = 1.0 / math.sqrt(2)
@@ -99,8 +99,8 @@ class QuantumKerasLayer(tf.keras.layers.Layer):
         return tf.reshape(s, [B, self.n_states])
 
     def _apply_cnot(self, state, ctrl, tgt):
-        src = self.cnot_masks[f"{ctrl}_{tgt}_src"]
-        dst = self.cnot_masks[f"{ctrl}_{tgt}_dst"]
+        src = tf.constant(self.cnot_masks[f"{ctrl}_{tgt}_src"], dtype=tf.int32)
+        dst = tf.constant(self.cnot_masks[f"{ctrl}_{tgt}_dst"], dtype=tf.int32)
         
         state_src = tf.gather(state, src, axis=1)
         state_dst = tf.gather(state, dst, axis=1)
