@@ -49,18 +49,20 @@ class QuantumKerasLayer(tf.keras.layers.Layer):
         ], dtype=tf.complex64)
 
     def _ry(self, angles):
-        angles = tf.cast(angles, tf.complex64)
-        c = tf.math.cos(angles / 2)
-        s = tf.math.sin(angles / 2)
+        angles = tf.cast(angles, tf.float32)
+        c = tf.cast(tf.math.cos(angles / 2.0), tf.complex64)
+        s = tf.cast(tf.math.sin(angles / 2.0), tf.complex64)
         row0 = tf.stack([c, -s], axis=-1)
         row1 = tf.stack([s,  c], axis=-1)
         return tf.stack([row0, row1], axis=-2)
 
     def _rz(self, angles):
-        angles = tf.cast(angles, tf.complex64)
-        half = angles / 2
-        e_neg = tf.math.exp(tf.complex(0.0, -1.0) * tf.math.real(half))
-        e_pos = tf.math.exp(tf.complex(0.0, 1.0) * tf.math.real(half))
+        angles = tf.cast(angles, tf.float32)
+        half = angles / 2.0
+        c = tf.math.cos(half)
+        s = tf.math.sin(half)
+        e_neg = tf.complex(c, -s)
+        e_pos = tf.complex(c, s)
         z = tf.zeros_like(e_neg)
         row0 = tf.stack([e_neg, z], axis=-1)
         row1 = tf.stack([z, e_pos], axis=-1)
