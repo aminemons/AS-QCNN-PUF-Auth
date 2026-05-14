@@ -14,8 +14,12 @@ import sys
 import time
 from pathlib import Path
 
+# Suppress noisy TF warnings (cast, oneDNN, etc.) — keep errors only
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import numpy as np
 import tensorflow as tf
+tf.get_logger().setLevel("ERROR")
 import yaml
 
 # Allow running from repo root
@@ -34,14 +38,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_tf_dataset(npz_path, batch_size):
-    """Loads NPZ into tf.data.Dataset"""
+def load_tf_dataset(npz_path, batch_size, max_samples=0):
+    """Loads NPZ into tf.data.Dataset.
+    max_samples: if > 0, cap total samples used (0 = use all).
+    """
     data = np.load(npz_path)
     challenges = data["challenges"].astype(np.float32)
     responses = data["responses"].astype(np.int32)
     
-    # 80/10/10 split
     n = len(challenges)
+    if max_samples > 0:
+        n = min(n, max_samples)
+        challenges = challenges[:n]
+        responses = responses[:n]
+    logger.info(f"  Using {n:,} / {len(data['challenges']):,} samples")
+    
+    # 80/10/10 split
     n_train = int(n * 0.8)
     n_val = int(n * 0.1)
     
@@ -112,7 +124,8 @@ def train_puf_type(xor_k: int, cfg: dict) -> dict:
     logger.info(f"Dataset: {npz_path}")
 
     batch_size = cfg.get("batch_size", 512)
-    train_ds, val_ds, test_ds = load_tf_dataset(npz_path, batch_size)
+    max_samples = cfg.get("max_train_samples", 0)
+    train_ds, val_ds, test_ds = load_tf_dataset(npz_path, batch_size, max_samples)
 
     # Initialize TF Model
     model = HybridQCNN(

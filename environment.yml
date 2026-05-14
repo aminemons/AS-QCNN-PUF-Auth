@@ -1,6 +1,5 @@
 name: as-qcnn-puf
 channels:
-  - pytorch
   - nvidia
   - conda-forge
   - defaults
@@ -17,8 +16,6 @@ dependencies:
   - scikit-learn>=1.4
   - tensorboard>=2.16
   - pip:
-    - tensorflow>=2.15.0
+    - tensorflow[and-cuda]>=2.15.0
     - pygad>=3.3.1
     - pypuf>=2.2.0
-    - pennylane>=0.38.0
-    - pennylane-lightning>=0.38.0

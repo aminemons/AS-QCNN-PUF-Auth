@@ -170,8 +170,10 @@ class QuantumKerasLayer(tf.keras.layers.Layer):
             for q in range(self.n_qubits):
                 state = self._apply_cnot(state, q, (q + 1) % self.n_qubits)
 
-        # 3. Pauli-Z expectations
-        probs = tf.math.square(tf.math.abs(state))  # [B, N]
+        # 3. Pauli-Z expectations  (real/imag avoids complex→float cast warnings)
+        re = tf.math.real(state)
+        im = tf.math.imag(state)
+        probs = re * re + im * im                   # [B, N]  float32
         s = tf.reshape(probs, tf.concat([[B], [2]*self.n_qubits], axis=0))
         exps = []
         for i in range(self.n_qubits):
