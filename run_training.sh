@@ -52,7 +52,7 @@ echo "====================================================="
 # Activate conda env if available
 if command -v conda &>/dev/null; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate qcnn 2>/dev/null || conda activate base
+    conda activate as-qcnn-puf 2>/dev/null || conda activate base
 fi
 
 # Run training
