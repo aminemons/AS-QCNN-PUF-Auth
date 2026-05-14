@@ -1,25 +1,27 @@
-# Full training config — RTX A5000 24GB — target 3-4 hours total
-# Run: python phase1_quantum/02_train_qcnn.py --config phase1_quantum/configs/full_config.yaml
+# Full training config — RTX A5000 24GB — targets 80%+ accuracy in ~30-60 min
+# Run: bash run_training.sh phase1_quantum/configs/full_config.yaml "3xor,5xor"
 
 data_dir:    "data"
 output_dir:  "results"
 n_bits:      64
 n_qubits:    8
 n_layers:    6
-batch_size:  4096
+batch_size:  2048     # large batches → faster convergence on CPU/GPU
 num_workers: 8
 
-# Training phases
-epochs_warmup: 0
-epochs_joint:  80
-lr_warmup:     1.0e-3
-lr_joint:      5.0e-5
-lr_vqc:        1.0e-3
-weight_decay:  1.0e-4
-lambda_ent:    0.005
-early_stop_patience: 15
+# Adam optimizer settings (replaces slow Genetic Algorithm)
+lr_joint:              5.0e-4   # Adam learning rate (cosine-decayed)
+early_stop_patience:   12       # stop if val_acc doesn't improve for N epochs
 
-# Genetic Algorithm (PyGAD) settings
-ga_population_size:  15    # number of candidate weight vectors per generation
-ga_generations:      50    # total generations to evolve
-ga_fitness_batch:  5000    # samples used per fitness evaluation (speed vs accuracy)
+# ga_generations is reused as the number of training epochs
+ga_generations:        60       # max epochs (early stopping kicks in sooner)
+
+# Legacy GA fields (unused, kept for backward compat)
+epochs_warmup:         0
+epochs_joint:          60
+lr_warmup:             1.0e-3
+lr_vqc:                1.0e-3
+weight_decay:          1.0e-4
+lambda_ent:            0.005
+ga_population_size:    15
+ga_fitness_batch:      5000
