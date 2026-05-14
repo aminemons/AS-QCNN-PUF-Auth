@@ -18,3 +18,8 @@ lr_vqc:        1.0e-3
 weight_decay:  1.0e-4
 lambda_ent:    0.005
 early_stop_patience: 15
+
+# Genetic Algorithm (PyGAD) settings
+ga_population_size:  15    # number of candidate weight vectors per generation
+ga_generations:      50    # total generations to evolve
+ga_fitness_batch:  5000    # samples used per fitness evaluation (speed vs accuracy)
