@@ -1,10 +1,11 @@
 """
 Hybrid Classical-Quantum model for PUF binary authentication in TensorFlow.
 
-Pipeline:
-  [64-bit challenge] → ClassicalEncoder(64→128→64→8)
-                     → KerasLayer(8 qubits, 6 layers)
-                     → ClassicalHead(8→1)
+Architecture (from GA search, best=77.4% in 7 epochs):
+  [64-bit challenge] → 16 patches of 4 bits
+                     → ClassicalEncoder(4→32→4) per patch
+                     → QuantumKerasLayer(4 qubits, 5 layers)
+                     → ClassicalHead(64→64→64→1)
                      → sigmoid → binary response
 """
 
@@ -12,101 +13,117 @@ import tensorflow as tf
 from .quantum_circuit import create_quantum_layer
 import math
 
+
 class ClassicalEncoder(tf.keras.layers.Layer):
     """Maps a PUF challenge patch to qubit rotation angles."""
-    def __init__(self, in_features: int = 16, hidden: int = 128, out_features: int = 8):
+    def __init__(self, in_features: int = 4, hidden_layers=None, out_features: int = 4, dropout: float = 0.193):
         super().__init__()
-        self.dense1 = tf.keras.layers.Dense(hidden)
-        self.bn1 = tf.keras.layers.BatchNormalization()
-        self.relu1 = tf.keras.layers.ReLU()
-        self.dropout = tf.keras.layers.Dropout(0.1)
-        
-        self.dense2 = tf.keras.layers.Dense(64)
-        self.bn2 = tf.keras.layers.BatchNormalization()
-        self.relu2 = tf.keras.layers.ReLU()
-        
-        self.dense3 = tf.keras.layers.Dense(out_features)
-        self.tanh = tf.keras.layers.Activation('tanh')
+        if hidden_layers is None:
+            hidden_layers = [32]
+
+        layers = []
+        prev = in_features
+        for h in hidden_layers:
+            layers.append(tf.keras.layers.Dense(h))
+            layers.append(tf.keras.layers.BatchNormalization())
+            layers.append(tf.keras.layers.ReLU())
+            layers.append(tf.keras.layers.Dropout(dropout))
+            prev = h
+
+        layers.append(tf.keras.layers.Dense(out_features))
+        layers.append(tf.keras.layers.Activation('tanh'))
+        self._enc_layers = layers
 
     def call(self, x, training=False):
-        x = self.dense1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
-        x = self.dropout(x, training=training)
-        
-        x = self.dense2(x)
-        x = self.bn2(x, training=training)
-        x = self.relu2(x)
-        
-        x = self.dense3(x)
-        x = self.tanh(x)
-        return x * math.pi  # scale to [-pi, pi]
+        for layer in self._enc_layers:
+            if isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.Dropout)):
+                x = layer(x, training=training)
+            else:
+                x = layer(x)
+        return x * math.pi  # scale to [-π, π]
 
 
 class ClassicalHead(tf.keras.layers.Layer):
     """Maps concatenated PauliZ expectation values to a binary prediction."""
-    def __init__(self, in_features: int = 8):
+    def __init__(self, in_features: int = 64, hidden_layers=None, dropout: float = 0.193):
         super().__init__()
-        self.dense1 = tf.keras.layers.Dense(16)
-        self.bn1 = tf.keras.layers.BatchNormalization()
-        self.relu1 = tf.keras.layers.ReLU()
-        self.dropout = tf.keras.layers.Dropout(0.1)
-        
-        self.dense2 = tf.keras.layers.Dense(1)
+        if hidden_layers is None:
+            hidden_layers = [64, 64]
+
+        layers = []
+        for h in hidden_layers:
+            layers.append(tf.keras.layers.Dense(h))
+            layers.append(tf.keras.layers.BatchNormalization())
+            layers.append(tf.keras.layers.ReLU())
+            layers.append(tf.keras.layers.Dropout(dropout))
+
+        layers.append(tf.keras.layers.Dense(1))
+        self._head_layers = layers
 
     def call(self, x, training=False):
-        x = self.dense1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
-        x = self.dropout(x, training=training)
-        return self.dense2(x)
+        for layer in self._head_layers:
+            if isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.Dropout)):
+                x = layer(x, training=training)
+            else:
+                x = layer(x)
+        return x
 
 
 class HybridQCNN(tf.keras.Model):
     """
     End-to-End Hybrid Quantum Convolutional Neural Network.
     Processes the PUF challenge in overlapping patches.
+
+    Default architecture matches GA-optimized result:
+      n_qubits=4, vqc_layers=5, n_patches=16, enc=[32], head=[64,64], drop=0.193
     """
-    def __init__(self, n_bits: int = 64, n_qubits: int = 8, n_layers: int = 6):
+    def __init__(self, n_bits: int = 64, n_qubits: int = 4, n_layers: int = 5,
+                 n_patches: int = 16, encoder_hidden=None, head_hidden=None,
+                 dropout: float = 0.193):
         super().__init__()
         self.n_bits = n_bits
         self.n_qubits = n_qubits
-        
-        # We split the 64-bit challenge into 4 patches of 16 bits.
-        self.patch_size = 16
-        self.n_patches = n_bits // self.patch_size
-        
+        self.n_patches = n_patches
+        self.patch_size = n_bits // n_patches   # 64/16 = 4
+
+        if encoder_hidden is None:
+            encoder_hidden = [32]
+        if head_hidden is None:
+            head_hidden = [64, 64]
+
         # Weight sharing across patches (like a CNN)
-        self.encoder = ClassicalEncoder(in_features=self.patch_size, hidden=128, out_features=n_qubits)
+        self.encoder = ClassicalEncoder(
+            in_features=self.patch_size,
+            hidden_layers=encoder_hidden,
+            out_features=n_qubits,
+            dropout=dropout,
+        )
         self.vqc = create_quantum_layer(n_qubits=n_qubits, n_layers=n_layers)
-        
-        # Combine all patches expectation values
-        self.head = ClassicalHead(in_features=self.n_patches * n_qubits)
+
+        # Combine all patches' expectation values
+        self.head = ClassicalHead(
+            in_features=self.n_patches * n_qubits,
+            hidden_layers=head_hidden,
+            dropout=dropout,
+        )
 
     def call(self, x, training=False):
-        # x is [B, 64]
-        # Reshape to [B, 4, 16]
-        patches = tf.reshape(x, [-1, self.n_patches, self.patch_size])
-        
-        # Process each patch
+        # x: [B, 64]
+        patches = tf.reshape(x, [-1, self.n_patches, self.patch_size])  # [B, 16, 4]
+
         patch_expectations = []
         for i in range(self.n_patches):
-            patch = patches[:, i, :]
-            angles = self.encoder(patch, training=training)
-            # vqc layer
-            expectations = self.vqc(angles)
+            patch = patches[:, i, :]          # [B, 4]
+            angles = self.encoder(patch, training=training)  # [B, n_qubits]
+            expectations = self.vqc(angles)   # [B, n_qubits]
             patch_expectations.append(expectations)
-            
-        # Concatenate across the feature dimension -> [B, 32]
+
+        # [B, 16*4] = [B, 64]
         concat_exp = tf.concat(patch_expectations, axis=-1)
-        
-        logits = self.head(concat_exp, training=training)
-        return logits
+        return self.head(concat_exp, training=training)   # [B, 1]
 
     def count_parameters_dict(self):
-        """Helper to get counts for logging"""
-        # Call model on dummy input to build weights
+        """Helper to get counts for logging."""
         self(tf.zeros((1, self.n_bits)))
-        total = sum([tf.keras.backend.count_params(w) for w in self.trainable_weights])
+        total = sum(tf.keras.backend.count_params(w) for w in self.trainable_weights)
         return {"total": total}
-
