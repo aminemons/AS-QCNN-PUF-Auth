@@ -1,61 +1,188 @@
 """
-PennyLane-based Variational Quantum Circuit for TensorFlow.
-Integrates seamlessly with TensorFlow Keras models and PyGAD.
+Pure TensorFlow GPU-native Variational Quantum Circuit.
+Replaces PennyLane KerasLayer (which is deprecated/buggy in Keras 3) with blazing fast batched GPU matrix multiplications.
 """
 
 import tensorflow as tf
-import pennylane as qml
 import numpy as np
 import math
 
-
-def create_quantum_layer(n_qubits: int = 8, n_layers: int = 6):
+class QuantumKerasLayer(tf.keras.layers.Layer):
     """
-    Creates a TensorFlow KerasLayer containing the Quantum Circuit.
+    Variational Quantum Circuit implemented entirely in TensorFlow.
+    Runs on CUDA with full batch parallelism.
     """
-    dev = qml.device("default.qubit", wires=n_qubits)
+    def __init__(self, n_qubits: int = 8, n_layers: int = 6, **kwargs):
+        super().__init__(**kwargs)
+        self.n_qubits = n_qubits
+        self.n_states = 2 ** n_qubits
+        self.n_layers = n_layers
 
-    @qml.qnode(dev, interface="tf")
-    def qnode(inputs, weights):
-        # inputs:  [n_qubits]
-        # weights: [n_layers, n_qubits, 3]
+    def build(self, input_shape):
+        init = tf.keras.initializers.RandomUniform(minval=-1e-4, maxval=1e-4)
+        self.theta = self.add_weight(
+            name="quantum_weights",
+            shape=(self.n_layers, self.n_qubits, 3),
+            initializer=init,
+            trainable=True
+        )
+        self._register_cnot_masks()
+        super().build(input_shape)
+
+    def _register_cnot_masks(self):
+        n = self.n_qubits
+        self.cnot_masks = {}
+        for ctrl in range(n):
+            tgt = (ctrl + 1) % n
+            indices = np.arange(2 ** n)
+            ctrl_is_1 = (indices >> (n - 1 - ctrl)) & 1 == 1
+            flip_mask = 1 << (n - 1 - tgt)
+            flipped = indices ^ flip_mask
+            self.cnot_masks[f"{ctrl}_{tgt}_src"] = tf.constant(indices[ctrl_is_1], dtype=tf.int32)
+            self.cnot_masks[f"{ctrl}_{tgt}_dst"] = tf.constant(flipped[ctrl_is_1], dtype=tf.int32)
+
+    def _h(self):
+        inv_sqrt2 = 1.0 / math.sqrt(2)
+        return tf.constant([
+            [inv_sqrt2,  inv_sqrt2],
+            [inv_sqrt2, -inv_sqrt2]
+        ], dtype=tf.complex64)
+
+    def _ry(self, angles):
+        angles = tf.cast(angles, tf.complex64)
+        c = tf.math.cos(angles / 2)
+        s = tf.math.sin(angles / 2)
+        row0 = tf.stack([c, -s], axis=-1)
+        row1 = tf.stack([s,  c], axis=-1)
+        return tf.stack([row0, row1], axis=-2)
+
+    def _rz(self, angles):
+        angles = tf.cast(angles, tf.complex64)
+        half = angles / 2
+        e_neg = tf.math.exp(tf.complex(0.0, -1.0) * tf.math.real(half))
+        e_pos = tf.math.exp(tf.complex(0.0, 1.0) * tf.math.real(half))
+        z = tf.zeros_like(e_neg)
+        row0 = tf.stack([e_neg, z], axis=-1)
+        row1 = tf.stack([z, e_pos], axis=-1)
+        return tf.stack([row0, row1], axis=-2)
+
+    def _apply_single(self, state, gate, qubit):
+        n = self.n_qubits
+        B = tf.shape(state)[0]
+        
+        # Reshape: [B, 2, 2, ..., 2]
+        s = tf.reshape(state, [B] + [2] * n)
+        
+        # Permute target qubit to dimension 1 (after batch)
+        dim = qubit + 1
+        perm = list(range(n + 1))
+        perm[1], perm[dim] = perm[dim], perm[1]
+        s = tf.transpose(s, perm=perm)
+        
+        # Flatten non-target dims: [B, 2, rest]
+        rest = 2 ** (n - 1)
+        s = tf.reshape(s, [B, 2, rest])
+        
+        if len(gate.shape) == 3:
+            s = tf.einsum("bij,bjk->bik", gate, s)
+        else:
+            s = tf.einsum("ij,bjk->bik", gate, s)
+            
+        inv_perm = [0] * (n + 1)
+        for i, p in enumerate(perm):
+            inv_perm[p] = i
+            
+        s = tf.reshape(s, [B] + [2] * n)
+        s = tf.transpose(s, perm=inv_perm)
+        return tf.reshape(s, [B, self.n_states])
+
+    def _apply_cnot(self, state, ctrl, tgt):
+        src = self.cnot_masks[f"{ctrl}_{tgt}_src"]
+        dst = self.cnot_masks[f"{ctrl}_{tgt}_dst"]
+        
+        state_src = tf.gather(state, src, axis=1)
+        state_dst = tf.gather(state, dst, axis=1)
+        
+        # In TF, we cannot do inplace updates like state[:, src] = state_dst easily.
+        # We must use tensor_scatter_nd_update
+        B = tf.shape(state)[0]
+        
+        # Create indices for scatter
+        b_idx = tf.repeat(tf.range(B), tf.shape(src)[0])
+        src_idx = tf.tile(src, [B])
+        dst_idx = tf.tile(dst, [B])
+        
+        # Shape: [B * len(src), 2]
+        indices_src = tf.stack([b_idx, src_idx], axis=1)
+        indices_dst = tf.stack([b_idx, dst_idx], axis=1)
+        
+        out = tf.tensor_scatter_nd_update(state, indices_src, tf.reshape(state_dst, [-1]))
+        out = tf.tensor_scatter_nd_update(out, indices_dst, tf.reshape(state_src, [-1]))
+        return out
+
+    def call(self, x):
+        B = tf.shape(x)[0]
+        
+        # |0...0⟩ initial state
+        state = tf.zeros([B, self.n_states], dtype=tf.complex64)
+        indices = tf.stack([tf.range(B), tf.zeros(B, dtype=tf.int32)], axis=1)
+        updates = tf.ones([B], dtype=tf.complex64)
+        state = tf.tensor_scatter_nd_update(state, indices, updates)
 
         # 1. ZZ Feature Map
-        for i in range(n_qubits):
-            qml.Hadamard(wires=i)
+        h_gate = self._h()
+        for i in range(self.n_qubits):
+            state = self._apply_single(state, h_gate, i)
 
-        for i in range(n_qubits):
-            qml.RZ(inputs[i], wires=i)
+        for i in range(self.n_qubits):
+            gate = self._rz(x[:, i])
+            state = self._apply_single(state, gate, i)
 
-        for i in range(n_qubits):
-            j = (i + 1) % n_qubits
-            qml.CNOT(wires=[i, j])
-            qml.RZ(inputs[i] * inputs[j], wires=j)
-            qml.CNOT(wires=[i, j])
+        for i in range(self.n_qubits):
+            j = (i + 1) % self.n_qubits
+            theta = x[:, i] * x[:, j]
+            state = self._apply_cnot(state, i, j)
+            gate = self._rz(theta)
+            state = self._apply_single(state, gate, j)
+            state = self._apply_cnot(state, i, j)
 
-        # 2. Strongly Entangling Layers
-        for l in range(n_layers):
-            for q in range(n_qubits):
-                qml.RZ(weights[l, q, 0], wires=q)
-                qml.RY(weights[l, q, 1], wires=q)
-                qml.RZ(weights[l, q, 2], wires=q)
-            for q in range(n_qubits):
-                qml.CNOT(wires=[q, (q + 1) % n_qubits])
+        # 2. StronglyEntanglingLayers
+        for layer in range(self.n_layers):
+            w = self.theta[layer]
+            for q in range(self.n_qubits):
+                t0, t1, t2 = w[q, 0], w[q, 1], w[q, 2]
+                gz1 = tf.squeeze(self._rz(tf.expand_dims(t0, 0)), axis=0)
+                gy  = tf.squeeze(self._ry(tf.expand_dims(t1, 0)), axis=0)
+                gz2 = tf.squeeze(self._rz(tf.expand_dims(t2, 0)), axis=0)
+                state = self._apply_single(state, gz1, q)
+                state = self._apply_single(state, gy,  q)
+                state = self._apply_single(state, gz2, q)
 
-        return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+            for q in range(self.n_qubits):
+                state = self._apply_cnot(state, q, (q + 1) % self.n_qubits)
 
-    weight_shapes = {"weights": (n_layers, n_qubits, 3)}
-    
-    # Random uniform initialization logic similar to PyTorch
-    init = tf.keras.initializers.RandomUniform(minval=-0.01, maxval=0.01)
-    
-    qlayer = qml.qnn.KerasLayer(
-        qnode, 
-        weight_shapes, 
-        output_dim=n_qubits,
-        weight_specs={"weights": {"initializer": init}}
-    )
-    return qlayer
+        # Measurement
+        probs = tf.math.square(tf.math.abs(state))
+        s = tf.reshape(probs, [B] + [2] * self.n_qubits)
+        
+        expectations = []
+        for i in range(self.n_qubits):
+            # To marginalize over qubit `i`, we sum over all other axes.
+            # In TF, we want to sum over axes [1..n_qubits] EXCEPT (i+1).
+            axes_to_sum = [a for a in range(1, self.n_qubits + 1) if a != (i + 1)]
+            
+            # Sum out all non-target qubits
+            marginal = tf.reduce_sum(s, axis=axes_to_sum)  # Shape [B, 2]
+            
+            # Expectation value is P(|0>) - P(|1>)
+            p0 = marginal[:, 0]
+            p1 = marginal[:, 1]
+            expectations.append(p0 - p1)
+            
+        return tf.stack(expectations, axis=-1)
+
+def create_quantum_layer(n_qubits: int = 8, n_layers: int = 6):
+    return QuantumKerasLayer(n_qubits=n_qubits, n_layers=n_layers)
 
 
 def get_unitary_matrices(weights: np.ndarray) -> dict:
