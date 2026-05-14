@@ -49,14 +49,21 @@ echo " PUF types : ${PUF_TYPES}"
 echo " Log file  : ${LOG_FILE}"
 echo "====================================================="
 
-# Activate conda env if available
+# Find the absolute path to the conda python to guarantee the right environment
+PYTHON_CMD="python"
 if command -v conda &>/dev/null; then
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate as-qcnn-puf 2>/dev/null || conda activate base
+    CONDA_BASE=$(conda info --base)
+    # Check standard env path
+    if [ -f "$CONDA_BASE/envs/as-qcnn-puf/bin/python" ]; then
+        PYTHON_CMD="$CONDA_BASE/envs/as-qcnn-puf/bin/python"
+    # Check ~/.conda/envs path (often used by users without root)
+    elif [ -f "$HOME/.conda/envs/as-qcnn-puf/bin/python" ]; then
+        PYTHON_CMD="$HOME/.conda/envs/as-qcnn-puf/bin/python"
+    fi
 fi
 
 # Run training
-python phase1_quantum/02_train_qcnn.py \
+$PYTHON_CMD phase1_quantum/02_train_qcnn.py \
     --config "${CONFIG}" \
     --puf_types "${PUF_TYPES}" \
     2>&1 | tee "${LOG_FILE}"
