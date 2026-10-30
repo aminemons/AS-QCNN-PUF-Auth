@@ -21,15 +21,20 @@ results/metrics/    # JSON metrics per PUF type
 ```
 [64-bit PUF Challenge]
         ↓
-[Classical Encoder]  Linear(64→128→64→8) + ReLU + BN
+[16 patches of 4 bits]
         ↓
-[Quantum VQC]        8 qubits | 6 StronglyEntangling layers | AngleEmbedding
-                     Pure PyTorch GPU implementation (no cuQuantum needed)
+[Shared Classical Encoder]  Dense(4→32→4), BatchNorm, ReLU, Dropout, tanh
         ↓
-[Classical Head]     Linear(8→1) + Sigmoid
+[Shared Quantum VQC]        4 qubits | 5 layers | TensorFlow implementation
         ↓
-[Binary Response]    0 or 1
+[Concatenated expectations] 16 patches × 4 qubits = 64 features
+        ↓
+[Classical Head]            Dense(64→64→64→1)
+        ↓
+[Binary-response logit]
 ```
+
+This describes the defaults in `phase1_quantum/models/hybrid_model.py` and the qubit/layer settings in `phase1_quantum/configs/full_config.yaml`. Older training/export utilities and dependency manifests may still need alignment with this model; the diagram is not a claim that every pipeline stage has been reproduced.
 
 **PUF evaluation targets (not benchmark results):**
 | PUF | Bits | CRPs | Classical ML Acc | QCNN Target |
@@ -76,7 +81,7 @@ bash push_results.sh
 - RAM: 32 GB recommended
 - Storage: 20 GB free (datasets + checkpoints)
 
-No cuQuantum required. Quantum simulation runs natively in PyTorch on CUDA.
+The current model uses TensorFlow/Keras; the conda environment requests `tensorflow[and-cuda]`. It does not require cuQuantum. The separate `requirements.txt` still lists legacy PyTorch dependencies and should be reconciled before using that installation path.
 
 ---
 
