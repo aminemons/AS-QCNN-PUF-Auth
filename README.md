@@ -31,14 +31,14 @@ results/metrics/    # JSON metrics per PUF type
 [Binary Response]    0 or 1
 ```
 
-**PUF Types trained on:**
+**PUF evaluation targets (not benchmark results):**
 | PUF | Bits | CRPs | Classical ML Acc | QCNN Target |
 |---|---|---|---|---|
 | 1-XOR Arbiter | 64 | 1M | ~99% | ~99% |
 | 3-XOR Arbiter | 64 | 1M | ~85% | ~92% |
 | 5-XOR Arbiter | 64 | 1M | ~65% | ~78% |
 
-The **5-XOR gap** demonstrates quantum advantage.
+These values are project targets and reference estimates, not measured results established by committed experiment artifacts. The tracked `results/metrics/` and `results/plots/` directories currently contain placeholders. Evaluate the QCNN and matched classical baselines on the same held-out data before drawing performance conclusions. This target table does not demonstrate quantum advantage.
 
 ---
 
