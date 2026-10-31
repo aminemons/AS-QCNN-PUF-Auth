@@ -10,12 +10,19 @@ from phase1_quantum.export.fixed_point import (
 
 
 class HlsLiteralTests(unittest.TestCase):
+    def test_wrong_matrix_dimensions_are_not_silently_truncated(self):
+        for shape in ((3, 3), (2, 3), (1, 2), (4,)):
+            matrix = np.zeros(shape)
+            for export in (quantize_matrix, lambda value: matrix_to_hls_cpp(value, "unitary")):
+                with self.subTest(shape=shape), self.assertRaises(ValueError):
+                    export(matrix)
+
     def test_complex_matrix_report_round_trips_through_strict_json(self):
         matrix = np.array([[1 + 2j, .25 - .5j], [-1j, 0]], dtype=complex)
         result = json.loads(json.dumps(quantize_matrix(matrix), allow_nan=False))
         self.assertEqual(result["complex_format"], "real_imag_pairs")
         pairs = np.asarray(result["float_matrix"])
-        np.testing.assert_array_equal(pairs[..., 0] + 1j * pairs[..., 1], matrix)
+        self.assertEqual((pairs[..., 0] + 1j * pairs[..., 1]).tolist(), matrix.tolist())
         self.assertEqual(result["max_error"], 0)
 
     def test_numpy_unsigned_words_decode_without_overflow(self):

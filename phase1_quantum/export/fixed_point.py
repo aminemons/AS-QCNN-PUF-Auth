@@ -44,6 +44,13 @@ def from_fixed_point(fp_int: int) -> float:
     return fp_int / SCALE
 
 
+def _as_2x2(U):
+    matrix = np.asarray(U, dtype=complex)
+    if matrix.shape != (2, 2):
+        raise ValueError("Only 2x2 matrices are supported for single-qubit export")
+    return matrix
+
+
 def quantize_matrix(U: np.ndarray) -> dict:
     """
     Quantize a 2x2 complex numpy matrix to fixed-point.
@@ -55,7 +62,7 @@ def quantize_matrix(U: np.ndarray) -> dict:
       - reconstructed: back-converted values as real/imaginary pairs
       - max_error:    max absolute element-wise error
     """
-    assert U.shape == (2, 2), "Only 2x2 matrices supported"
+    U = _as_2x2(U)
     fixed_ints = np.zeros((2, 2, 2), dtype=np.int32)   # [i, j, {real,imag}]
     reconstructed = np.zeros((2, 2), dtype=complex)
 
@@ -87,6 +94,7 @@ def matrix_to_hls_cpp(U: np.ndarray, var_name: str) -> str:
           {{ {real_fp, imag_fp}, {real_fp, imag_fp} }}
       };
     """
+    U = _as_2x2(U)
     lines = [f"const q_complex {var_name}[2][2] = {{"]
     for i in range(2):
         row_parts = []
