@@ -11,6 +11,7 @@ Reference: Xilinx Vitis HLS ap_fixed<16,4>
 
 import numpy as np
 import math
+import operator
 
 
 TOTAL_BITS = 16
@@ -31,6 +32,12 @@ def to_fixed_point(value: float) -> int:
 
 def from_fixed_point(fp_int: int) -> float:
     """Convert ap_fixed<16,4> integer back to float."""
+    if isinstance(fp_int, (bool, np.bool_)):
+        raise TypeError("A fixed-point word must be an integer, not a boolean")
+    # Normalize NumPy integer scalars before subtraction to avoid uint overflow.
+    fp_int = operator.index(fp_int)
+    if not -(2 ** (TOTAL_BITS - 1)) <= fp_int < 2 ** TOTAL_BITS:
+        raise ValueError("Word is outside signed or unsigned 16-bit range")
     # Handle two's complement
     if fp_int >= 2 ** (TOTAL_BITS - 1):
         fp_int -= 2 ** TOTAL_BITS
