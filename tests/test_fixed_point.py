@@ -1,14 +1,23 @@
 import re
+import json
 import unittest
 
 import numpy as np
 
 from phase1_quantum.export.fixed_point import (
-    MAX_VAL, MIN_VAL, SCALE, matrix_to_hls_cpp, to_fixed_point, from_fixed_point,
+    MAX_VAL, MIN_VAL, SCALE, matrix_to_hls_cpp, to_fixed_point, from_fixed_point, quantize_matrix,
 )
 
 
 class HlsLiteralTests(unittest.TestCase):
+    def test_complex_matrix_report_round_trips_through_strict_json(self):
+        matrix = np.array([[1 + 2j, .25 - .5j], [-1j, 0]], dtype=complex)
+        result = json.loads(json.dumps(quantize_matrix(matrix), allow_nan=False))
+        self.assertEqual(result["complex_format"], "real_imag_pairs")
+        pairs = np.asarray(result["float_matrix"])
+        np.testing.assert_array_equal(pairs[..., 0] + 1j * pairs[..., 1], matrix)
+        self.assertEqual(result["max_error"], 0)
+
     def test_numpy_unsigned_words_decode_without_overflow(self):
         self.assertEqual(from_fixed_point(np.uint16(65535)), -1 / SCALE)
         self.assertEqual(from_fixed_point(np.uint16(32768)), MIN_VAL)

@@ -49,9 +49,10 @@ def quantize_matrix(U: np.ndarray) -> dict:
     Quantize a 2x2 complex numpy matrix to fixed-point.
 
     Returns dict with:
-      - float_matrix: original
+      - complex_format: real_imag_pairs, with final axis [real, imaginary]
+      - float_matrix: original values as JSON-safe real/imaginary pairs
       - fixed_ints:   integer representation
-      - reconstructed: back-converted float (to measure quantization error)
+      - reconstructed: back-converted values as real/imaginary pairs
       - max_error:    max absolute element-wise error
     """
     assert U.shape == (2, 2), "Only 2x2 matrices supported"
@@ -68,9 +69,10 @@ def quantize_matrix(U: np.ndarray) -> dict:
 
     max_error = np.abs(U - reconstructed).max()
     return {
-        "float_matrix": U.tolist(),
+        "complex_format": "real_imag_pairs",
+        "float_matrix": np.stack((U.real, U.imag), axis=-1).tolist(),
         "fixed_ints": fixed_ints.tolist(),
-        "reconstructed": reconstructed.tolist(),
+        "reconstructed": np.stack((reconstructed.real, reconstructed.imag), axis=-1).tolist(),
         "max_error": float(max_error),
     }
 
