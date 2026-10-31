@@ -10,6 +10,12 @@ from phase1_quantum.export.fixed_point import (
 
 
 class HlsLiteralTests(unittest.TestCase):
+    def test_invalid_cpp_names_cannot_produce_malformed_headers(self):
+        for name in ("", "for", "123bad", "bad name", "x; int y", "_reserved", "two__parts"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                matrix_to_hls_cpp(np.eye(2), name)
+        self.assertIn("unitary_layer_0_qubit_0[2][2]", matrix_to_hls_cpp(np.eye(2), "unitary_layer_0_qubit_0"))
+
     def test_wrong_matrix_dimensions_are_not_silently_truncated(self):
         for shape in ((3, 3), (2, 3), (1, 2), (4,)):
             matrix = np.zeros(shape)

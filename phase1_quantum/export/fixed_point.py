@@ -12,6 +12,7 @@ Reference: Xilinx Vitis HLS ap_fixed<16,4>
 import numpy as np
 import math
 import operator
+import re
 
 
 TOTAL_BITS = 16
@@ -20,6 +21,15 @@ FRAC_BITS = 12
 SCALE = 2 ** FRAC_BITS           # 4096
 MAX_VAL =  (2 ** (INT_BITS - 1)) - 2 ** (-FRAC_BITS)   # ≈ 7.999756
 MIN_VAL = -(2 ** (INT_BITS - 1))                         # -8.0
+CXX_KEYWORDS = frozenset("""alignas alignof and and_eq asm auto bitand bitor bool
+break case catch char char8_t char16_t char32_t class compl concept const consteval
+constexpr constinit const_cast continue co_await co_return co_yield decltype default
+delete do double dynamic_cast else enum explicit export extern false float for friend
+goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or
+or_eq private protected public register reinterpret_cast requires return short signed
+sizeof static static_assert static_cast struct switch template this thread_local throw
+true try typedef typeid typename union unsigned using virtual void volatile wchar_t
+while xor xor_eq""".split())
 
 
 def to_fixed_point(value: float) -> int:
@@ -94,6 +104,11 @@ def matrix_to_hls_cpp(U: np.ndarray, var_name: str) -> str:
           {{ {real_fp, imag_fp}, {real_fp, imag_fp} }}
       };
     """
+    if not isinstance(var_name, str):
+        raise TypeError("The HLS variable name must be a string")
+    if (not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", var_name)
+            or "__" in var_name or var_name in CXX_KEYWORDS):
+        raise ValueError("The HLS variable name must be a non-reserved C++ identifier")
     U = _as_2x2(U)
     lines = [f"const q_complex {var_name}[2][2] = {{"]
     for i in range(2):
