@@ -9,6 +9,11 @@ from phase1_quantum.export.fixed_point import (
 
 
 class HlsLiteralTests(unittest.TestCase):
+    def test_nonfinite_values_cannot_become_valid_hardware_constants(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                to_fixed_point(value)
+
     def test_literals_retain_lsb_when_converted_with_truncation(self):
         matrix = np.array([[1 / SCALE, -1 / SCALE], [MAX_VAL, MIN_VAL]], dtype=complex)
         source = matrix_to_hls_cpp(matrix, "unitary")

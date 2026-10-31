@@ -23,6 +23,8 @@ MIN_VAL = -(2 ** (INT_BITS - 1))                         # -8.0
 
 def to_fixed_point(value: float) -> int:
     """Convert a float to ap_fixed<16,4> integer representation."""
+    if not math.isfinite(value):
+        raise ValueError("Fixed-point export requires a finite value")
     clamped = max(MIN_VAL, min(MAX_VAL, value))
     return int(round(clamped * SCALE))
 
