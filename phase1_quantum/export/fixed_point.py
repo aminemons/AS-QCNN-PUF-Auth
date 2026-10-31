@@ -3,7 +3,7 @@ Fixed-point quantization utilities for FPGA handoff.
 
 Converts float32 complex matrix entries to ap_fixed<16,4> format:
   - 1 sign bit
-  - 3 integer bits  → max value ±7
+  - 3 magnitude bits → range [-8, 8 - 2^-12]
   - 12 fractional bits → resolution 2^-12 ≈ 0.000244
 
 Reference: Xilinx Vitis HLS ap_fixed<16,4>
@@ -82,7 +82,10 @@ def matrix_to_hls_cpp(U: np.ndarray, var_name: str) -> str:
         for j in range(2):
             r = from_fixed_point(to_fixed_point(U[i, j].real))
             im = from_fixed_point(to_fixed_point(U[i, j].imag))
-            row_parts.append(f"{{{r:.6f}f, {im:.6f}f}}")
+            # Q12 values have exact terminating decimals with at most 12 places.
+            # Six places can round below a grid point and lose an LSB when HLS
+            # converts the literal using its default truncation mode.
+            row_parts.append(f"{{{r:.12f}f, {im:.12f}f}}")
         lines.append(f"    {{{', '.join(row_parts)}}},")
     lines.append("};")
     return "\n".join(lines)
